@@ -28,45 +28,94 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from gradient_descent import DataParallelGradientDescent, SequentialFiniteSumGradientDescent
+from gradient_descent import (
+    DataParallelGradientDescent,
+    SequentialGradientDescent,
+    finite_sum_mean_squared_grad,
+    finite_sum_mean_squared_partial_grad,
+)
 
 SIZES: Sequence[int] = (1000, 5000, 10000, 20000)
 
-WORKERS: Sequence[int] = (2, 4, 5, 6, 7, 12)
+WORKERS: Sequence[int] = (2, 4, 6, 8, 10, 12)
 
 COMMON = dict(learning_rate=0.1, max_iterations=200, tolerance=1e-5)
 
 X0 = np.array([5.0])
 
-DEC = 3
+DEC = 2
+
+PARALLEL_IMPLS: Sequence[str] = ("map", "recursive")
 
 
-def bench_row(n: int) -> Tuple[float, Dict[int, float]]:
+def bench_row(n: int, parallel_impl: str = "map") -> Tuple[float, Dict[int, float]]:
     """
     Для фіксованого n генеруємо c один раз, далі вимірюємо послідовний час
-    та час паралельної версії для кожного значення з WORKERS.
+    та час паралельної версії (обраний parallel_impl) для кожного w з WORKERS.
     """
     rng = np.random.default_rng(42 + n)
     c = rng.uniform(0.0, 10.0, size=n)
 
     t0 = time.perf_counter()
-    SequentialFiniteSumGradientDescent(**COMMON).fit(c, X0)
+    SequentialGradientDescent(**COMMON).fit(
+        X0, finite_sum_mean_squared_grad, c=c
+    )
     t_seq = time.perf_counter() - t0
 
     t_par: Dict[int, float] = {}
     for w in WORKERS:
         t0 = time.perf_counter()
-        DataParallelGradientDescent(**COMMON, n_workers=w).fit(c, X0)
+        DataParallelGradientDescent(
+            **COMMON, n_workers=w, parallel_impl=parallel_impl
+        ).fit(
+            X0,
+            partial_grad_fn=finite_sum_mean_squared_partial_grad,
+            c=c,
+        )
         t_par[w] = time.perf_counter() - t0
 
     return t_seq, t_par
 
 
-def print_table(rows: List[Tuple[int, float, Dict[int, float]]]) -> None:
-    title = (
-        "Таблиця 5.1 — Час виконання (с) та прискорення паралельної реалізації "
-        "(data-parallel, скінчена сума)"
+def bench_row_compare_impls(n: int) -> Tuple[float, Dict[int, Dict[str, float]]]:
+    """
+    Для фіксованого n вимірює:
+    - послідовний час;
+    - паралельний час для кожного w з WORKERS і кожної impl з PARALLEL_IMPLS.
+    """
+    rng = np.random.default_rng(42 + n)
+    c = rng.uniform(0.0, 10.0, size=n)
+
+    t0 = time.perf_counter()
+    SequentialGradientDescent(**COMMON).fit(
+        X0, finite_sum_mean_squared_grad, c=c
     )
+    t_seq = time.perf_counter() - t0
+
+    t_par: Dict[int, Dict[str, float]] = {}
+    for w in WORKERS:
+        t_par[w] = {}
+        for impl in PARALLEL_IMPLS:
+            t0 = time.perf_counter()
+            DataParallelGradientDescent(
+                **COMMON, n_workers=w, parallel_impl=impl
+            ).fit(
+                X0,
+                partial_grad_fn=finite_sum_mean_squared_partial_grad,
+                c=c,
+            )
+            t_par[w][impl] = time.perf_counter() - t0
+
+    return t_seq, t_par
+
+
+def print_table(
+    rows: List[Tuple[int, float, Dict[int, float]]],
+    *,
+    table_label: str = "Таблиця 5.1",
+    impl_label: str = "map",
+) -> None:
+    title = f"{table_label} — Час виконання (с) та прискорення ({impl_label})"
     print()
     print(title)
     print()
@@ -113,12 +162,12 @@ def write_csv(path: str, rows: List[Tuple[int, float, Dict[int, float]]]) -> Non
             w.writerow(row)
 
 
-def print_table_5_2(rows: List[Tuple[int, float, Dict[int, float]]]) -> None:
-    """Таблиця 5.2: лише прискорення (Пр.) та ефективність (Еф. = Пр. / p)."""
-    title = (
-        "Таблиця 5.2 — Прискорення та ефективність паралельної реалізації "
-        "(data-parallel, скінчена сума)"
-    )
+def print_table_speedup_eff(
+    rows: List[Tuple[int, float, Dict[int, float]]],
+    *,
+    title: str = "Таблиця — Прискорення та ефективність",
+) -> None:
+    """Лише прискорення (Пр.) та ефективність (Еф. = Пр. / p)."""
     print()
     print(title)
     print()
@@ -201,7 +250,68 @@ def plot_execution_times(
     plt.close(fig)
 
 
-def write_csv_5_2(path: str, rows: List[Tuple[int, float, Dict[int, float]]]) -> None:
+def write_csv_impl_compare(
+    path: str, rows: List[Tuple[int, float, Dict[int, Dict[str, float]]]]
+) -> None:
+    fieldnames = ["N", "T_seq_s"]
+    for w in WORKERS:
+        for impl in PARALLEL_IMPLS:
+            fieldnames.append(f"T_parallel_{impl}_{w}_s")
+            fieldnames.append(f"speedup_{impl}_{w}")
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        wr = csv.DictWriter(f, fieldnames=fieldnames)
+        wr.writeheader()
+        for n, t_seq, t_par in rows:
+            row: Dict[str, object] = {"N": n, "T_seq_s": f"{t_seq:.{DEC}f}"}
+            for w in WORKERS:
+                for impl in PARALLEL_IMPLS:
+                    tp = t_par[w][impl]
+                    sp = t_seq / tp if tp > 0 else float("nan")
+                    row[f"T_parallel_{impl}_{w}_s"] = f"{tp:.{DEC}f}"
+                    row[f"speedup_{impl}_{w}"] = f"{sp:.{DEC}f}" if tp > 0 else ""
+            wr.writerow(row)
+
+
+def plot_impl_comparison(
+    rows: List[Tuple[int, float, Dict[int, Dict[str, float]]]],
+    out_path: str,
+    workers: Optional[Sequence[int]] = None,
+) -> None:
+    """
+    Графік порівняння двох паралельних реалізацій:
+    - map: суцільні лінії
+    - recursive: пунктирні лінії
+    """
+    wk = tuple(workers) if workers is not None else WORKERS
+    if not rows:
+        raise ValueError("Немає даних для графіка")
+
+    ns = [r[0] for r in rows]
+    t_seq_ms = [r[1] * 1000.0 for r in rows]
+
+    colors = ["#d62728", "#bcbd22", "#2ca02c", "#ff7f0e", "#17becf", "#9467bd", "#e377c2"]
+
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
+    ax.plot(ns, t_seq_ms, color="#1f77b4", linewidth=2.2, label="sequential")
+
+    for i, p in enumerate(wk):
+        c = colors[i % len(colors)]
+        ys_map = [r[2][p]["map"] * 1000.0 for r in rows]
+        ys_rec = [r[2][p]["recursive"] * 1000.0 for r in rows]
+        ax.plot(ns, ys_map, color=c, linewidth=2.0, linestyle="-", label=f"map_p{p}")
+        ax.plot(ns, ys_rec, color=c, linewidth=2.0, linestyle="--", label=f"recursive_p{p}")
+
+    ax.set_xlabel("N")
+    ax.set_ylabel("Час виконання, мс")
+    ax.grid(True, alpha=0.35)
+    ax.legend(loc="upper left", ncol=2, framealpha=0.95)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def write_csv_speedup_eff(path: str, rows: List[Tuple[int, float, Dict[int, float]]]) -> None:
     fieldnames = ["N"]
     for w in WORKERS:
         fieldnames.append(f"speedup_{w}")
@@ -221,14 +331,31 @@ def write_csv_5_2(path: str, rows: List[Tuple[int, float, Dict[int, float]]]) ->
             wr.writerow(row)
 
 
+def _measure_rows(parallel_impl: str) -> List[Tuple[int, float, Dict[int, float]]]:
+    rows = []
+    for n in SIZES:
+        print(f"Вимірювання N = {n} (impl={parallel_impl}) ...", flush=True)
+        t_seq, t_par = bench_row(n, parallel_impl=parallel_impl)
+        rows.append((n, t_seq, t_par))
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Таблиці 5.1–5.2 та графік часу від N для finite-sum GD."
+        description=(
+            "Таблиці 5.1 (map, час+прискорення), 5.2 (recursive, час+прискорення), "
+            "5.3 (map, прискорення+ефективність), 5.4 (recursive, прискорення+ефективність)."
+        )
     )
     parser.add_argument(
         "--plot-only",
         action="store_true",
         help="Лише зберегти benchmark_5.png з наявного table_5_1.csv (без замірів)",
+    )
+    parser.add_argument(
+        "--compare-impls",
+        action="store_true",
+        help="Додатково заміряти map vs recursive та зберегти окремий CSV/графік",
     )
     args = parser.parse_args()
 
@@ -249,25 +376,51 @@ def main() -> None:
         print(f"Графік збережено: {png_path}")
         return
 
-    rows = []
-    for n in SIZES:
-        print(f"Вимірювання N = {n} ...", flush=True)
-        t_seq, t_par = bench_row(n)
-        rows.append((n, t_seq, t_par))
-
-    print_table(rows)
-
+    rows_map = _measure_rows("map")
+    print_table(rows_map, table_label="Таблиця 5.1", impl_label="map")
     out1 = os.path.join(base, "table_5_1.csv")
-    write_csv(out1, rows)
+    write_csv(out1, rows_map)
     print(f"CSV збережено: {out1}")
 
-    print_table_5_2(rows)
+    rows_recursive = _measure_rows("recursive")
+    print_table(rows_recursive, table_label="Таблиця 5.2", impl_label="recursive")
     out2 = os.path.join(base, "table_5_2.csv")
-    write_csv_5_2(out2, rows)
+    write_csv(out2, rows_recursive)
     print(f"CSV збережено: {out2}")
 
-    plot_execution_times(rows, png_path, workers=WORKERS)
-    print(f"Графік збережено: {png_path}")
+    print_table_speedup_eff(
+        rows_map,
+        title="Таблиця 5.3 — Прискорення та ефективність (map)",
+    )
+    out3 = os.path.join(base, "table_5_3.csv")
+    write_csv_speedup_eff(out3, rows_map)
+    print(f"CSV збережено: {out3}")
+
+    print_table_speedup_eff(
+        rows_recursive,
+        title="Таблиця 5.4 — Прискорення та ефективність (recursive)",
+    )
+    out4 = os.path.join(base, "table_5_4.csv")
+    write_csv_speedup_eff(out4, rows_recursive)
+    print(f"CSV збережено: {out4}")
+
+    if args.compare_impls:
+        rows_impl = []
+        for n in SIZES:
+            print(f"Порівняння impl для N = {n} ...", flush=True)
+            t_seq, t_par_impl = bench_row_compare_impls(n)
+            rows_impl.append((n, t_seq, t_par_impl))
+
+        out_impl_csv = os.path.join(base, "table_5_impl_compare.csv")
+        write_csv_impl_compare(out_impl_csv, rows_impl)
+        print(f"CSV (impl compare) збережено: {out_impl_csv}")
+
+        out_impl_png = os.path.join(base, "benchmark_5_impl_compare.png")
+        plot_impl_comparison(rows_impl, out_impl_png, workers=WORKERS)
+        print(f"Графік (impl compare) збережено: {out_impl_png}")
+    else:
+        plot_execution_times(rows_map, png_path, workers=WORKERS)
+        print(f"Графік збережено: {png_path}")
 
 
 if __name__ == "__main__":

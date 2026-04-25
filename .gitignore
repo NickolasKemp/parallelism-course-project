@@ -1,1 +1,4 @@
 /trash
+.pycache
+.DS_Store
+sudocode-v2.md

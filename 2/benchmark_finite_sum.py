@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 
 from gradient_descent import (
     DataParallelGradientDescent,
-    SequentialFiniteSumGradientDescent,
+    finite_sum_mean_squared_partial_grad,
 )
 
 SIZES: List[int] = [1000, 5000, 10000, 20000, 50000]
@@ -43,11 +43,14 @@ def bench_one(
     x0 = np.array([5.0])
 
     t0 = time.perf_counter()
-    # SequentialFiniteSumGradientDescent(**common).fit(c, x0)
     t_seq = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    DataParallelGradientDescent(**common, n_workers=n_workers).fit(c, x0)
+    DataParallelGradientDescent(**common, n_workers=n_workers).fit(
+        x0,
+        partial_grad_fn=finite_sum_mean_squared_partial_grad,
+        c=c,
+    )
     t_par = time.perf_counter() - t0
 
     return t_seq, t_par
