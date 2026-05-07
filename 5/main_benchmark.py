@@ -32,7 +32,6 @@ from gradient_descent import (
     DataParallelGradientDescent,
     SequentialGradientDescent,
     finite_sum_mean_squared_grad,
-    finite_sum_mean_squared_partial_grad,
 )
 
 SIZES: Sequence[int] = (1000, 5000, 10000, 20000)
@@ -69,7 +68,7 @@ def bench_row(n: int, parallel_impl: str = "map") -> Tuple[float, Dict[int, floa
             **COMMON, n_workers=w, parallel_impl=parallel_impl
         ).fit(
             X0,
-            partial_grad_fn=finite_sum_mean_squared_partial_grad,
+            grad_fn=finite_sum_mean_squared_grad,
             c=c,
         )
         t_par[w] = time.perf_counter() - t0
@@ -101,7 +100,7 @@ def bench_row_compare_impls(n: int) -> Tuple[float, Dict[int, Dict[str, float]]]
                 **COMMON, n_workers=w, parallel_impl=impl
             ).fit(
                 X0,
-                partial_grad_fn=finite_sum_mean_squared_partial_grad,
+                grad_fn=finite_sum_mean_squared_grad,
                 c=c,
             )
             t_par[w][impl] = time.perf_counter() - t0

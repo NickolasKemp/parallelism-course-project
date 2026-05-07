@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 
 from gradient_descent import (
     DataParallelGradientDescent,
-    finite_sum_mean_squared_partial_grad,
+    finite_sum_mean_squared_grad,
 )
 
 SIZES: List[int] = [1000, 5000, 10000, 20000, 50000]
@@ -48,7 +48,7 @@ def bench_one(
     t0 = time.perf_counter()
     DataParallelGradientDescent(**common, n_workers=n_workers).fit(
         x0,
-        partial_grad_fn=finite_sum_mean_squared_partial_grad,
+        grad_fn=finite_sum_mean_squared_grad,
         c=c,
     )
     t_par = time.perf_counter() - t0
